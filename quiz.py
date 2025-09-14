@@ -316,6 +316,16 @@ def calculate_score(time_taken, is_correct, question_type, accuracy=1.0):
         return int(base_score + time_bonus)
     return 0
 
+# Functions for color logic
+def get_random_color():
+    return f"#{random.randint(0, 0xFFFFFF):06x}"
+
+def get_text_color(hex_color):
+    hex_color = hex_color.lstrip('#')
+    rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    luminance = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255
+    return "white" if luminance < 0.5 else "black"
+
 # --- Page Functions ---
 
 # Login/Registration Page
@@ -802,8 +812,7 @@ def play_game(quiz_data):
             st.session_state.selected_answer = None
             st.session_state.answer_submitted = False
             st.session_state.streak = 0
-            st.session_state.current_page = st.session_state.prev_page
-            st.rerun()
+            set_page(st.session_state.prev_page)
             
         if st.session_state.prev_page != "trivia" and st.button("← Go Back to Lobby"):
             st.session_state.current_question = 0
