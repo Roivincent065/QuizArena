@@ -77,6 +77,7 @@ EMOJI_AVATARS = ["🧠", "🚀", "💡", "📚", "🎓", "🌟", "🤓", "😎",
 
 # --- Database Functions (JSON file) ---
 USERS_DB = "users.json"
+LOBBIES_DB = "lobbies.json"
 
 def load_users():
     if not os.path.exists(USERS_DB):
@@ -87,6 +88,16 @@ def load_users():
 def save_users(users):
     with open(USERS_DB, "w") as f:
         json.dump(users, f, indent=4)
+
+def load_lobbies():
+    if not os.path.exists(LOBBIES_DB):
+        return {}
+    with open(LOBBIES_DB, "r") as f:
+        return json.load(f)
+
+def save_lobbies(lobbies):
+    with open(LOBBIES_DB, "w") as f:
+        json.dump(lobbies, f, indent=4)
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -237,8 +248,9 @@ def generate_quiz(text, game_mode, num_questions=5):
 
 # Function to create a new lobby
 def create_lobby(lobby_name, lobby_type, max_players=10):
+    lobbies = load_lobbies()
     lobby_id = f"L{random.randint(10000, 99999)}"
-    st.session_state.lobbies[lobby_id] = {
+    lobbies[lobby_id] = {
         "id": lobby_id,
         "name": lobby_name,
         "type": lobby_type,
@@ -251,24 +263,29 @@ def create_lobby(lobby_name, lobby_type, max_players=10):
         "scores": {st.session_state.user_id: 0},
         "start_time": None
     }
+    save_lobbies(lobbies)
     return lobby_id
 
 # Function to join a lobby
 def join_lobby(lobby_id):
-    if lobby_id in st.session_state.lobbies:
-        lobby = st.session_state.lobbies[lobby_id]
+    lobbies = load_lobbies()
+    if lobby_id in lobbies:
+        lobby = lobbies[lobby_id]
         if len(lobby["players"]) < lobby["max_players"] and st.session_state.user_id not in lobby["players"]:
             lobby["players"].append(st.session_state.user_id)
             lobby["player_names"].append(st.session_state.username)
             lobby["scores"][st.session_state.user_id] = 0
+            save_lobbies(lobbies)
             return True
     return False
 
 # Function to start the game in a lobby
 def start_game(lobby_id):
-    if lobby_id in st.session_state.lobbies:
-        st.session_state.lobbies[lobby_id]["status"] = "playing"
-        st.session_state.lobbies[lobby_id]["start_time"] = time.time()
+    lobbies = load_lobbies()
+    if lobby_id in lobbies:
+        lobbies[lobby_id]["status"] = "playing"
+        lobbies[lobby_id]["start_time"] = time.time()
+        save_lobbies(lobbies)
         st.session_state.game_started = True
         st.session_state.current_page = "playing"
         return True
@@ -465,6 +482,9 @@ def exam_prep_page():
     </style>
     """, unsafe_allow_html=True)
     
+    # Load lobbies at the start of the page function
+    st.session_state.lobbies = load_lobbies()
+
     tab1, tab2, tab3 = st.tabs(["🎪 Create Lobby", "🚪 Join Lobby", "📁 Upload Materials"])
     
     with tab1:
@@ -509,6 +529,7 @@ def exam_prep_page():
                         if quiz_data:
                             st.session_state.quiz_data = quiz_data
                             st.session_state.lobbies[st.session_state.current_lobby]["quiz_data"] = quiz_data
+                            save_lobbies(st.session_state.lobbies)
                             st.success("Quiz generated successfully! 🎯")
                         else:
                             st.error("Failed to generate quiz.")
@@ -694,7 +715,9 @@ def play_game(quiz_data):
             
             st.session_state.user_score += score
             if st.session_state.current_lobby:
-                st.session_state.lobbies[st.session_state.current_lobby]["scores"][st.session_state.user_id] += score
+                lobbies = load_lobbies()
+                lobbies[st.session_state.current_lobby]["scores"][st.session_state.user_id] += score
+                save_lobbies(lobbies)
             if is_correct:
                 st.session_state.streak += 1
             else:
@@ -750,7 +773,8 @@ def play_game(quiz_data):
         st.subheader("🏆 Match Leaderboard")
         match_scores = []
         if st.session_state.current_lobby:
-            lobby = st.session_state.lobbies[st.session_state.current_lobby]
+            lobbies = load_lobbies()
+            lobby = lobbies[st.session_state.current_lobby]
             for user_id, score in lobby["scores"].items():
                 username = next((name for p_id, name in zip(lobby["players"], lobby["player_names"]) if p_id == user_id), "Unknown")
                 match_scores.append({"Username": username, "Score": int(score)})
@@ -887,10 +911,11 @@ def leaderboards_page():
     else:
         st.info("No leaderboard data yet. Complete some quizzes to appear here! 🎯")
     
-    if st.session_state.lobbies:
+    lobbies = load_lobbies()
+    if lobbies:
         st.markdown("---")
         st.subheader("🎪 Lobby Leaderboards")
-        for lobby_id, lobby in st.session_state.lobbies.items():
+        for lobby_id, lobby in lobbies.items():
             with st.expander(f"Lobby: {lobby['name']} ({lobby_id})"):
                 if lobby["scores"]:
                     lobby_scores = []
