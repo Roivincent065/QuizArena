@@ -286,7 +286,6 @@ def start_game(lobby_id):
         lobbies[lobby_id]["status"] = "playing"
         lobbies[lobby_id]["start_time"] = time.time()
         save_lobbies(lobbies)
-        st.session_state.game_started = True
         st.session_state.current_page = "playing"
         return True
     return False
@@ -484,6 +483,13 @@ def exam_prep_page():
     
     # Load lobbies at the start of the page function
     st.session_state.lobbies = load_lobbies()
+
+    # Check if the game has been started by the host
+    if st.session_state.current_lobby and st.session_state.lobbies[st.session_state.current_lobby]["status"] == "playing":
+        st.session_state.quiz_data = st.session_state.lobbies[st.session_state.current_lobby]["quiz_data"]
+        st.session_state.game_started = True
+        st.session_state.current_page = "playing"
+        st.rerun()
 
     tab1, tab2, tab3 = st.tabs(["🎪 Create Lobby", "🚪 Join Lobby", "📁 Upload Materials"])
     
@@ -799,7 +805,7 @@ def play_game(quiz_data):
             st.session_state.current_page = st.session_state.prev_page
             st.rerun()
             
-        if st.button("← Go Back to Lobby"):
+        if st.session_state.prev_page != "trivia" and st.button("← Go Back to Lobby"):
             st.session_state.current_question = 0
             st.session_state.user_answers = {}
             st.session_state.user_score = 0
