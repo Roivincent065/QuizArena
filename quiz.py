@@ -24,8 +24,12 @@ st.set_page_config(
 
 # Initialize Groq client
 if "groq_client" not in st.session_state:
-    if "GROQ_API_KEY" in st.secrets:
-        st.session_state.groq_client = groq.Client(api_key=st.secrets["GROQ_API_KEY"])
+    if "GROQ_API_KEY" in st.secrets and st.secrets["GROQ_API_KEY"]:
+        try:
+            st.session_state.groq_client = groq.Client(api_key=st.secrets["GROQ_API_KEY"])
+        except Exception as e:
+            st.error(f"Error initializing Groq client: {e}")
+            st.session_state.groq_client = None
     else:
         st.session_state.groq_client = None
 
@@ -215,7 +219,8 @@ def extract_text_from_file(file):
 # Function to generate quiz using Groq API
 def generate_quiz(text, game_mode, num_questions=5):
     if not st.session_state.groq_client:
-        st.error("Groq API key not configured. Please add it to your secrets.toml file.")
+        st.error("Groq API key not configured or is invalid. Please check your secrets.toml file.")
+        st.info("You can get a Groq API key from https://console.groq.com/keys")
         return None
     
     if game_mode == "Multiple Choice":
