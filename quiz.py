@@ -306,18 +306,18 @@ def join_lobby(lobby_id):
             return True
     return False
 
-# Function to start the game in a lobby (after voting)
+# Function to start the game in a lobby
 def start_game(lobby_id):
     lobbies = load_lobbies()
     if lobby_id in lobbies:
         lobbies[lobby_id]["status"] = "playing"
-        st.session_state.quiz_data = lobbies[lobby_id]["quiz_data"]
         lobbies[lobby_id]["current_question"] = 0
-        lobbies[lobby_id]["start_time"] = time.time()
         lobbies[lobby_id]["question_start_time"] = time.time()
+        lobbies[lobby_id]["user_answers"] = {}
+        lobbies[lobby_id]["user_scores"] = {player_id: 0 for player_id in lobbies[lobby_id]["players"]}
         save_lobbies(lobbies)
-        st.session_state.game_started = True
-        set_page("playing", "lobby_page") # Correctly set prev_page
+        st.session_state.current_page = "playing"
+        st.rerun()
         return True
     return False
 
@@ -684,7 +684,7 @@ def play_game(quiz_data, current_idx, question_start_time):
     }
     </style>
     """, unsafe_allow_html=True)
-
+    
     questions = quiz_data["questions"]
     
     if current_idx < len(questions):
