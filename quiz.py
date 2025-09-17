@@ -544,98 +544,133 @@ def exam_prep_page():
             else:
                 st.error("Could not join lobby. It may be full or doesn't exist.")
 
-# New Lobby Page with Continuous Rerun
+# New Lobby Page with Continuous Rerun for players, not host
 def lobby_page():
     st.title("🎪 Lobby")
     
     # Use a placeholder to hold all lobby content
     lobby_placeholder = st.empty()
 
-    while True:
-        st.session_state.lobbies = load_lobbies()
-        lobby = st.session_state.lobbies.get(st.session_state.current_lobby)
+    st.session_state.lobbies = load_lobbies()
+    lobby = st.session_state.lobbies.get(st.session_state.current_lobby)
 
-        if not lobby:
-            st.error("Lobby not found.")
+    if not lobby:
+        st.error("Lobby not found.")
+        st.session_state.current_lobby = None
+        set_page("exam_prep")
+        st.rerun()
+
+    is_host = lobby["host"] == st.session_state.user_id
+
+    # Non-host players will continuously check the status
+    if not is_host:
+        while True:
+            st.session_state.lobbies = load_lobbies()
+            lobby = st.session_state.lobbies.get(st.session_state.current_lobby)
+            
+            if lobby and lobby["status"] == "playing":
+                st.info("The host has started the game!")
+                st.session_state.game_started = True
+                set_page("playing", "lobby_page")
+                st.rerun()
+
+            # Clear and rebuild the content inside the placeholder
+            with lobby_placeholder.container():
+                if st.button("← Leave Lobby"):
+                    st.session_state.current_lobby = None
+                    set_page("exam_prep")
+                    st.rerun()
+
+                st.markdown(f'### Lobby: {lobby["name"]} ({lobby["id"]})')
+                st.write(f"**Players:** {', '.join(lobby['player_names'])}")
+
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    st.info("Waiting for the host to upload materials and start the game.")
+
+                with col2:
+                    st.subheader("💬 Lobby Chat")
+                    chat_placeholder = st.container()
+                    with chat_placeholder:
+                        for message in lobby.get("chat_messages", []):
+                            st.write(f"**{message['username']}:** {message['message']}")
+                    
+                    chat_input = st.text_input("Type your message here...", key="chat_input")
+                    if st.button("Send", use_container_width=True) and chat_input:
+                        new_message = {
+                            "username": st.session_state.username,
+                            "message": chat_input,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        lobby["chat_messages"].append(new_message)
+                        save_lobbies(st.session_state.lobbies)
+                        st.rerun()
+            
+            # Rerun automatically every second to check for updates
+            time.sleep(1)
+            st.rerun()
+    else:
+        # Host's static view
+        if st.button("← Leave Lobby"):
             st.session_state.current_lobby = None
             set_page("exam_prep")
             st.rerun()
 
-        # Check if the game has started
-        if lobby["status"] == "playing":
-            st.info("The host has started the game!")
-            st.session_state.game_started = True
-            set_page("playing", "lobby_page")
-            st.rerun()
+        st.markdown(f'### Lobby: {lobby["name"]} ({lobby["id"]})')
+        st.write(f"**Players:** {', '.join(lobby['player_names'])}")
 
-        # Clear and rebuild the content inside the placeholder
-        with lobby_placeholder.container():
-            if st.button("← Leave Lobby"):
-                st.session_state.current_lobby = None
-                set_page("exam_prep")
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            st.subheader("Lobby Actions")
+            st.markdown("---")
+            st.subheader("📁 Upload Materials & Generate Quiz")
+            uploaded_file = st.file_uploader("Choose a file", type=["pdf", "pptx", "docx", "txt"])
+            game_mode = st.selectbox("Select Game Mode", 
+                                    ["Multiple Choice", "True or False", "Identification", "Enumeration", "Mix Mode"])
+            num_questions = st.slider("Number of Questions", 5, 20, 10)
+            
+            if uploaded_file and st.button("⚡ Generate Quiz", type="primary"):
+                with st.spinner("Extracting text and generating quiz..."):
+                    text = extract_text_from_file(uploaded_file)
+                    if text:
+                        quiz_data = generate_quiz(text, game_mode, num_questions)
+                        if quiz_data:
+                            lobby["quiz_data"] = quiz_data
+                            save_lobbies(st.session_state.lobbies)
+                            st.success("Quiz generated successfully! 🎯")
+                            st.rerun()
+                        else:
+                            st.error("Failed to generate quiz.")
+                    else:
+                        st.error("Could not extract text from the file.")
+            
+            if lobby["quiz_data"] and lobby["status"] == "waiting":
+                if st.button("🚀 Start Game", type="primary"):
+                    st.success("Starting the game...")
+                    start_game(st.session_state.current_lobby)
+
+        with col2:
+            st.subheader("💬 Lobby Chat")
+            
+            # Display chat messages
+            chat_placeholder = st.container()
+            with chat_placeholder:
+                for message in lobby.get("chat_messages", []):
+                    st.write(f"**{message['username']}:** {message['message']}")
+            
+            # Input for new message
+            chat_input = st.text_input("Type your message here...", key="chat_input")
+            if st.button("Send", use_container_width=True) and chat_input:
+                new_message = {
+                    "username": st.session_state.username,
+                    "message": chat_input,
+                    "timestamp": datetime.now().isoformat()
+                }
+                lobby["chat_messages"].append(new_message)
+                save_lobbies(st.session_state.lobbies)
                 st.rerun()
 
-            st.markdown(f'### Lobby: {lobby["name"]} ({lobby["id"]})')
-            st.write(f"**Players:** {', '.join(lobby['player_names'])}")
-
-            col1, col2 = st.columns([2, 1])
-
-            with col1:
-                st.subheader("Lobby Actions")
-                if lobby["host"] == st.session_state.user_id:
-                    st.markdown("---")
-                    st.subheader("📁 Upload Materials & Generate Quiz")
-                    uploaded_file = st.file_uploader("Choose a file", type=["pdf", "pptx", "docx", "txt"])
-                    game_mode = st.selectbox("Select Game Mode", 
-                                            ["Multiple Choice", "True or False", "Identification", "Enumeration", "Mix Mode"])
-                    num_questions = st.slider("Number of Questions", 5, 20, 10)
-                    
-                    if uploaded_file and st.button("⚡ Generate Quiz", type="primary"):
-                        with st.spinner("Extracting text and generating quiz..."):
-                            text = extract_text_from_file(uploaded_file)
-                            if text:
-                                quiz_data = generate_quiz(text, game_mode, num_questions)
-                                if quiz_data:
-                                    lobby["quiz_data"] = quiz_data
-                                    save_lobbies(st.session_state.lobbies)
-                                    st.success("Quiz generated successfully! 🎯")
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to generate quiz.")
-                            else:
-                                st.error("Could not extract text from the file.")
-                    
-                    if lobby["quiz_data"] and lobby["status"] == "waiting":
-                        if st.button("🚀 Start Game", type="primary"):
-                            st.success("Starting the game...")
-                            start_game(st.session_state.current_lobby)
-                else:
-                    st.info("Waiting for the host to upload materials and start the game.")
-
-            with col2:
-                st.subheader("💬 Lobby Chat")
-                
-                # Display chat messages
-                chat_placeholder = st.container()
-                with chat_placeholder:
-                    for message in lobby.get("chat_messages", []):
-                        st.write(f"**{message['username']}:** {message['message']}")
-                
-                # Input for new message
-                chat_input = st.text_input("Type your message here...", key="chat_input")
-                if st.button("Send", use_container_width=True) and chat_input:
-                    new_message = {
-                        "username": st.session_state.username,
-                        "message": chat_input,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    lobby["chat_messages"].append(new_message)
-                    save_lobbies(st.session_state.lobbies)
-                    st.rerun()
-        
-        # Rerun automatically every second to check for updates
-        time.sleep(1)
-        st.rerun()
 
 # Functions for color logic
 def get_random_color():
