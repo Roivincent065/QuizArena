@@ -544,6 +544,7 @@ def exam_prep_page():
                 st.error("Could not join lobby. It may be full or doesn't exist.")
 
 # New Lobby Page
+# New Lobby Page
 def lobby_page():
     st.title("🎪 Lobby")
     if st.button("← Leave Lobby"):
@@ -591,36 +592,13 @@ def lobby_page():
                         st.error("Could not extract text from the file.")
             
             if lobby["quiz_data"] and lobby["status"] == "waiting":
-                if st.button("🚀 Initiate Game Start"):
-                    if len(lobby["players"]) == 1:
-                        st.success("Starting the game as you are the only player...")
-                        start_game(st.session_state.current_lobby)
-                    else:
-                        lobby["status"] = "voting"
-                        lobby["votes_to_start"] = {}
-                        save_lobbies(st.session_state.lobbies)
-                        st.success("Voting initiated! Waiting for players to vote.")
-                        st.rerun()
+                if st.button("🚀 Start Game", type="primary"):
+                    st.success("Starting the game...")
+                    start_game(st.session_state.current_lobby)
         else:
             st.info("Waiting for the host to upload materials and start the game.")
-            if lobby["status"] == "voting":
-                st.subheader("Vote to Start")
-                if st.session_state.user_id not in lobby["votes_to_start"]:
-                    if st.button("👍 Vote to Start"):
-                        lobby["votes_to_start"][st.session_state.user_id] = True
-                        save_lobbies(st.session_state.lobbies)
-                        st.success("Your vote has been counted!")
-                        st.rerun()
-                else:
-                    st.success("You have already voted to start.")
-        
-        if lobby["status"] == "voting":
-            total_players = len(lobby["players"])
-            votes = len(lobby["votes_to_start"])
-            st.info(f"Votes to start: {votes}/{total_players}")
-            if votes == total_players:
-                st.success("All players have voted! Starting the game...")
-                start_game(st.session_state.current_lobby)
+            if lobby["status"] != "waiting":
+                st.info("The host has started the game.")
 
     with col2:
         st.subheader("💬 Lobby Chat")
