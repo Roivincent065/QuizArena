@@ -312,10 +312,11 @@ def start_game(lobby_id):
     if lobby_id in lobbies:
         lobbies[lobby_id]["status"] = "playing"
         st.session_state.quiz_data = lobbies[lobby_id]["quiz_data"]
+        lobbies[lobby_id]["current_question"] = 0
         lobbies[lobby_id]["start_time"] = time.time()
+        lobbies[lobby_id]["question_start_time"] = time.time()
         save_lobbies(lobbies)
         st.session_state.game_started = True
-        st.session_state.question_start_time = time.time()  # Reset timer for new game
         set_page("playing", "lobby_page") # Correctly set prev_page
         return True
     return False
@@ -544,19 +545,25 @@ def exam_prep_page():
                 st.error("Could not join lobby. It may be full or doesn't exist.")
 
 # New Lobby Page
-# New Lobby Page
 def lobby_page():
     st.title("🎪 Lobby")
-    if st.button("← Leave Lobby"):
-        st.session_state.current_lobby = None
-        set_page("exam_prep")
-        st.rerun()
     
     st.session_state.lobbies = load_lobbies()
     lobby = st.session_state.lobbies.get(st.session_state.current_lobby)
 
     if not lobby:
         st.error("Lobby not found.")
+        st.session_state.current_lobby = None
+        set_page("exam_prep")
+        st.rerun()
+    
+    # Check if the game has started
+    if lobby["status"] == "playing":
+        st.info("The host has started the game!")
+        set_page("playing", "lobby_page")
+        st.rerun()
+
+    if st.button("← Leave Lobby"):
         st.session_state.current_lobby = None
         set_page("exam_prep")
         st.rerun()
@@ -597,8 +604,6 @@ def lobby_page():
                     start_game(st.session_state.current_lobby)
         else:
             st.info("Waiting for the host to upload materials and start the game.")
-            if lobby["status"] != "waiting":
-                st.info("The host has started the game.")
 
     with col2:
         st.subheader("💬 Lobby Chat")
@@ -632,7 +637,7 @@ def get_text_color(hex_color):
     return "white" if luminance < 0.5 else "black"
 
 # Function to play the game
-def play_game(quiz_data):
+def play_game(quiz_data, current_idx, question_start_time):
     st.markdown("""
     <style>
     .question-container {
@@ -680,16 +685,6 @@ def play_game(quiz_data):
     </style>
     """, unsafe_allow_html=True)
 
-    if "current_question" not in st.session_state:
-        st.session_state.current_question = 0
-        st.session_state.start_time = time.time()
-        st.session_state.user_answers = {}
-        st.session_state.question_start_time = time.time()
-        st.session_state.timer_active = True
-        st.session_state.selected_answer = None
-        st.session_state.answer_submitted = False
-    
-    current_idx = st.session_state.current_question
     questions = quiz_data["questions"]
     
     if current_idx < len(questions):
@@ -706,7 +701,7 @@ def play_game(quiz_data):
         st.markdown(f'<div class="question-container"><h2>Question {current_idx + 1} of {len(questions)}</h2><h3>{question["question"]}</h3></div>', unsafe_allow_html=True)
         timer_placeholder = st.empty()
 
-        elapsed_time = time.time() - st.session_state.question_start_time
+        elapsed_time = time.time() - question_start_time
         time_remaining = int(max(0, time_limit - elapsed_time))
         
         with timer_placeholder.container():
@@ -719,7 +714,7 @@ def play_game(quiz_data):
             if not st.session_state.answer_submitted:
                 st.session_state.selected_answer = "Time's up!"
             
-            time_taken = int(time.time() - st.session_state.question_start_time)
+            time_taken = int(time.time() - question_start_time)
             is_correct = check_answer(question, st.session_state.selected_answer, question["question_type"])
             accuracy = 1.0
             score = calculate_score(time_taken, is_correct, question["question_type"], accuracy)
@@ -753,8 +748,15 @@ def play_game(quiz_data):
             
             time.sleep(3)
             
-            st.session_state.current_question += 1
-            st.session_state.question_start_time = time.time()
+            if st.session_state.current_lobby:
+                lobbies = load_lobbies()
+                lobbies[st.session_state.current_lobby]["current_question"] += 1
+                lobbies[st.session_state.current_lobby]["question_start_time"] = time.time()
+                save_lobbies(lobbies)
+            else:
+                st.session_state.current_question += 1
+                st.session_state.question_start_time = time.time()
+
             st.session_state.selected_answer = None
             st.session_state.answer_submitted = False
             st.rerun()
@@ -919,8 +921,19 @@ def trivia_page():
 
 # Playing page (for both exam prep and trivia)
 def playing_page():
-    if st.session_state.quiz_data:
-        play_game(st.session_state.quiz_data)
+    if st.session_state.current_lobby:
+        lobbies = load_lobbies()
+        lobby = lobbies[st.session_state.current_lobby]
+        quiz_data = lobby["quiz_data"]
+        current_idx = lobby["current_question"]
+        question_start_time = lobby["question_start_time"]
+    else:
+        quiz_data = st.session_state.quiz_data
+        current_idx = st.session_state.current_question
+        question_start_time = st.session_state.question_start_time
+
+    if quiz_data:
+        play_game(quiz_data, current_idx, question_start_time)
     else:
         st.error("No quiz data found. Please go back and generate a quiz first.")
         if st.button("← Go Back"):
