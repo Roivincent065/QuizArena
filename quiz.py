@@ -893,6 +893,7 @@ def play_game(quiz_data, current_idx, question_start_time):
             
         if st.session_state.prev_page == "lobby_page":
             if st.button("← Go Back to Quiz Lobby"):
+                # Reset all game-related state variables for a clean return
                 st.session_state.current_question = 0
                 st.session_state.user_answers = {}
                 st.session_state.user_score = 0
@@ -900,7 +901,7 @@ def play_game(quiz_data, current_idx, question_start_time):
                 st.session_state.selected_answer = None
                 st.session_state.answer_submitted = False
                 st.session_state.streak = 0
-                st.session_state.question_start_time = time.time()  # Reset timer for next game
+                st.session_state.question_start_time = time.time()
                 set_page("lobby_page")
         else:
             if st.button("← Go Back to Trivia Page"):
