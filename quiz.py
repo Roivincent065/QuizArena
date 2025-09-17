@@ -12,6 +12,7 @@ import io
 import pandas as pd
 import os
 import hashlib
+import threading
 
 # Set up the page
 st.set_page_config(
@@ -69,6 +70,12 @@ if "answer_submitted" not in st.session_state:
     st.session_state.answer_submitted = False
 if "prev_page" not in st.session_state:
     st.session_state.prev_page = "home"
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = {}
+if "current_question" not in st.session_state:
+    st.session_state.current_question = 0
+if "start_time" not in st.session_state:
+    st.session_state.start_time = time.time()
 
 # Kahoot-like colors for options
 OPTION_COLORS = ["#FF2B2B", "#1E88E5", "#FFC107", "#4CAF50"]
@@ -159,13 +166,22 @@ def generate_trivia_quiz(category=None, difficulty=None, num_questions=5):
             "correct_answer": row['answer'],
             "question_type": "mcq"
         }
-        if 'options' in row and pd.notna(row['options']):
+        if 'options' in row and pd.notna(row['options']) and len(row['options'].split('|')) == 4:
             options = row['options'].split('|')
             random.shuffle(options)
             question["options"] = options
         else:
-            options = [row['answer'], "Option 2", "Option 3", "Option 4"]
-            random.shuffle(options)
+            all_answers = st.session_state.trivia_data['answer'].tolist()
+            correct_answer = row['answer']
+            incorrect_answers = [ans for ans in all_answers if ans != correct_answer]
+            
+            if len(incorrect_answers) >= 3:
+                options = random.sample(incorrect_answers, 3)
+                options.append(correct_answer)
+                random.shuffle(options)
+            else:
+                options = [correct_answer] + ["N/A"] * 3
+                random.shuffle(options)
             question["options"] = options
         quiz_data["questions"].append(question)
     return quiz_data
@@ -174,23 +190,27 @@ def generate_trivia_quiz(category=None, difficulty=None, num_questions=5):
 def extract_text_from_file(file):
     file_type = file.type
     text = ""
-    if file_type == "text/plain":
-        text = str(file.read(), "utf-8")
-    elif file_type == "application/pdf":
-        pdf_reader = PyPDF2.PdfReader(file)
-        for page in pdf_reader.pages:
-            text += page.extract_text() + "\n"
-    elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        doc = docx.Document(io.BytesIO(file.read()))
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-    elif file_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-        prs = Presentation(io.BytesIO(file.read()))
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    text += shape.text + "\n"
-    return text
+    try:
+        if file_type == "text/plain":
+            text = str(file.read(), "utf-8")
+        elif file_type == "application/pdf":
+            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file.read()))
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+        elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            doc = docx.Document(io.BytesIO(file.read()))
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+        elif file_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+            prs = Presentation(io.BytesIO(file.read()))
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        text += shape.text + "\n"
+        return text
+    except Exception as e:
+        st.error(f"Error extracting text: {e}")
+        return ""
 
 # Function to generate quiz using Groq API
 def generate_quiz(text, game_mode, num_questions=5):
@@ -261,7 +281,9 @@ def create_lobby(lobby_name, lobby_type, max_players=10):
         "status": "waiting",
         "quiz_data": None,
         "scores": {st.session_state.user_id: 0},
-        "start_time": None
+        "start_time": None,
+        "chat_messages": [],
+        "votes_to_start": {}
     }
     save_lobbies(lobbies)
     return lobby_id
@@ -279,14 +301,17 @@ def join_lobby(lobby_id):
             return True
     return False
 
-# Function to start the game in a lobby
+# Function to start the game in a lobby (after voting)
 def start_game(lobby_id):
     lobbies = load_lobbies()
     if lobby_id in lobbies:
         lobbies[lobby_id]["status"] = "playing"
+        st.session_state.quiz_data = lobbies[lobby_id]["quiz_data"]
         lobbies[lobby_id]["start_time"] = time.time()
         save_lobbies(lobbies)
-        st.session_state.current_page = "playing"
+        st.session_state.game_started = True
+        st.session_state.question_start_time = time.time()  # Reset timer for new game
+        set_page("playing", "lobby_page") # Correctly set prev_page
         return True
     return False
 
@@ -316,16 +341,6 @@ def calculate_score(time_taken, is_correct, question_type, accuracy=1.0):
         return int(base_score + time_bonus)
     return 0
 
-# Functions for color logic
-def get_random_color():
-    return f"#{random.randint(0, 0xFFFFFF):06x}"
-
-def get_text_color(hex_color):
-    hex_color = hex_color.lstrip('#')
-    rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-    luminance = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255
-    return "white" if luminance < 0.5 else "black"
-
 # --- Page Functions ---
 
 # Login/Registration Page
@@ -339,6 +354,7 @@ def login_page():
         color: white;
         text-align: center;
         margin-top: 5rem;
+        font:Old English Text MT;
     }
     .stTextInput>div>div>input {
         color: black;
@@ -445,7 +461,7 @@ def home_page():
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        if st.button("📚 Exam Prep Quiz", use_container_width=True, type="primary"):
+        if st.button("📚 Quiz Lobby", use_container_width=True, type="primary"):
             set_page("exam_prep", "home")
     with col2:
         if st.button("🎯 General Knowledge Trivia", use_container_width=True, type="primary"):
@@ -473,9 +489,9 @@ def home_page():
     </div>
     """, unsafe_allow_html=True)
 
-# Exam prep page
+# Quiz Lobby Page
 def exam_prep_page():
-    st.title("📚 Exam Prep Quiz")
+    st.title("📚 Quiz Lobby")
     if st.button("← Go Back"):
         set_page("home")
     
@@ -494,14 +510,7 @@ def exam_prep_page():
     # Load lobbies at the start of the page function
     st.session_state.lobbies = load_lobbies()
 
-    # Check if the game has been started by the host
-    if st.session_state.current_lobby and st.session_state.lobbies[st.session_state.current_lobby]["status"] == "playing":
-        st.session_state.quiz_data = st.session_state.lobbies[st.session_state.current_lobby]["quiz_data"]
-        st.session_state.game_started = True
-        st.session_state.current_page = "playing"
-        st.rerun()
-
-    tab1, tab2, tab3 = st.tabs(["🎪 Create Lobby", "🚪 Join Lobby", "📁 Upload Materials"])
+    tab1, tab2 = st.tabs(["🎪 Create Lobby", "🚪 Join Lobby"])
     
     with tab1:
         st.subheader("Create a New Study Lobby")
@@ -513,6 +522,7 @@ def exam_prep_page():
             lobby_id = create_lobby(lobby_name, lobby_type, max_players)
             st.session_state.current_lobby = lobby_id
             st.success(f"Lobby created! Your lobby code is: **{lobby_id}**")
+            set_page("lobby_page", "exam_prep") # Correctly set prev_page
             st.rerun()
     
     with tab2:
@@ -523,15 +533,38 @@ def exam_prep_page():
             if join_lobby(lobby_id):
                 st.session_state.current_lobby = lobby_id
                 st.success("Joined lobby successfully! 🎉")
+                set_page("lobby_page", "exam_prep") # Correctly set prev_page
                 st.rerun()
             else:
                 st.error("Could not join lobby. It may be full or doesn't exist.")
+
+# New Lobby Page
+def lobby_page():
+    st.title("🎪 Lobby")
+    if st.button("← Leave Lobby"):
+        st.session_state.current_lobby = None
+        set_page("exam_prep")
+        st.rerun()
     
-    with tab3:
-        st.subheader("Upload Study Materials")
-        if st.session_state.current_lobby is None:
-            st.warning("You need to create or join a lobby first.")
-        else:
+    st.session_state.lobbies = load_lobbies()
+    lobby = st.session_state.lobbies.get(st.session_state.current_lobby)
+
+    if not lobby:
+        st.error("Lobby not found.")
+        st.session_state.current_lobby = None
+        set_page("exam_prep")
+        st.rerun()
+
+    st.markdown(f'### Lobby: {lobby["name"]} ({lobby["id"]})')
+    st.write(f"**Players:** {', '.join(lobby['player_names'])}")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.subheader("Lobby Actions")
+        if lobby["host"] == st.session_state.user_id:
+            st.markdown("---")
+            st.subheader("📁 Upload Materials & Generate Quiz")
             uploaded_file = st.file_uploader("Choose a file", type=["pdf", "pptx", "docx", "txt"])
             game_mode = st.selectbox("Select Game Mode", 
                                     ["Multiple Choice", "True or False", "Identification", "Enumeration", "Mix Mode"])
@@ -543,25 +576,67 @@ def exam_prep_page():
                     if text:
                         quiz_data = generate_quiz(text, game_mode, num_questions)
                         if quiz_data:
-                            st.session_state.quiz_data = quiz_data
-                            st.session_state.lobbies[st.session_state.current_lobby]["quiz_data"] = quiz_data
+                            lobby["quiz_data"] = quiz_data
                             save_lobbies(st.session_state.lobbies)
                             st.success("Quiz generated successfully! 🎯")
+                            st.rerun()
                         else:
                             st.error("Failed to generate quiz.")
                     else:
                         st.error("Could not extract text from the file.")
-
-    if st.session_state.current_lobby and st.session_state.current_lobby in st.session_state.lobbies:
-        lobby = st.session_state.lobbies[st.session_state.current_lobby]
-        st.markdown("---")
-        st.markdown(f'<div class="lobby-card"><h3>🎪 Lobby: {lobby["name"]} ({lobby["id"]})</h3></div>', unsafe_allow_html=True)
-        st.write(f"**Players:** {', '.join(lobby['player_names'])}")
-        st.write(f"**Status:** {lobby['status']}")
+            
+            if lobby["quiz_data"] and lobby["status"] == "waiting":
+                if st.button("🚀 Initiate Game Start"):
+                    if len(lobby["players"]) == 1:
+                        st.success("Starting the game as you are the only player...")
+                        start_game(st.session_state.current_lobby)
+                    else:
+                        lobby["status"] = "voting"
+                        lobby["votes_to_start"] = {}
+                        save_lobbies(st.session_state.lobbies)
+                        st.success("Voting initiated! Waiting for players to vote.")
+                        st.rerun()
+        else:
+            st.info("Waiting for the host to upload materials and start the game.")
+            if lobby["status"] == "voting":
+                st.subheader("Vote to Start")
+                if st.session_state.user_id not in lobby["votes_to_start"]:
+                    if st.button("👍 Vote to Start"):
+                        lobby["votes_to_start"][st.session_state.user_id] = True
+                        save_lobbies(st.session_state.lobbies)
+                        st.success("Your vote has been counted!")
+                        st.rerun()
+                else:
+                    st.success("You have already voted to start.")
         
-        if lobby["host"] == st.session_state.user_id and lobby["quiz_data"] and st.button("🚀 Start Game", type="primary"):
-            if start_game(st.session_state.current_lobby):
-                st.rerun()
+        if lobby["status"] == "voting":
+            total_players = len(lobby["players"])
+            votes = len(lobby["votes_to_start"])
+            st.info(f"Votes to start: {votes}/{total_players}")
+            if votes == total_players:
+                st.success("All players have voted! Starting the game...")
+                start_game(st.session_state.current_lobby)
+
+    with col2:
+        st.subheader("💬 Lobby Chat")
+        
+        # Display chat messages
+        chat_placeholder = st.container()
+        with chat_placeholder:
+            for message in lobby.get("chat_messages", []):
+                st.write(f"**{message['username']}:** {message['message']}")
+        
+        # Input for new message
+        chat_input = st.text_input("Type your message here...", key="chat_input")
+        if st.button("Send", use_container_width=True) and chat_input:
+            new_message = {
+                "username": st.session_state.username,
+                "message": chat_input,
+                "timestamp": datetime.now().isoformat()
+            }
+            lobby["chat_messages"].append(new_message)
+            save_lobbies(st.session_state.lobbies)
+            st.rerun()
 
 # Functions for color logic
 def get_random_color():
@@ -637,93 +712,30 @@ def play_game(quiz_data):
     if current_idx < len(questions):
         question = questions[current_idx]
         
+        # Set dynamic time limit based on question type
+        if question["question_type"] in ["identification", "enumeration"]:
+            answer_length = len(question.get("correct_answer", ""))
+            time_limit = min(15, max(10, 10 + answer_length // 5)) # 10-15 seconds
+        else:
+            time_limit = 10
+        
         # Display the question and timer
         st.markdown(f'<div class="question-container"><h2>Question {current_idx + 1} of {len(questions)}</h2><h3>{question["question"]}</h3></div>', unsafe_allow_html=True)
         timer_placeholder = st.empty()
 
-        # Check if an answer has been submitted or the timer has expired
-        time_limit = 6 # 5 seconds countdown
-        
-        # Initialize question_start_time if it's None
-        if st.session_state.question_start_time is None:
-            st.session_state.question_start_time = time.time()
-
         elapsed_time = time.time() - st.session_state.question_start_time
         time_remaining = int(max(0, time_limit - elapsed_time))
         
-        # Display countdown timer
-        with timer_placeholder:
+        with timer_placeholder.container():
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
                 st.markdown(f'<div class="timer-container">{time_remaining}s</div>', unsafe_allow_html=True)
 
-        if not st.session_state.answer_submitted:
-            # Display options based on question type
-            if question["question_type"] == "mcq":
-                options = question.get("options", [])
-                cols = st.columns(2)
-                for i, option in enumerate(options):
-                    with cols[i % 2]:
-                        random_color = get_random_color()
-                        text_color = get_text_color(random_color)
-                        button_style = f"--button-color: {random_color}; --text-color: {text_color};"
-                        if st.button(option, key=f"q{current_idx}_{i}", use_container_width=True, help="Select this option"):
-                            st.session_state.selected_answer = option
-                            st.session_state.answer_submitted = True
-                            st.rerun()
-                        # Use a little bit of magic to apply the style to the button
-                        st.markdown(f"""
-                        <style>
-                        div[data-testid="stColumn"] > div > div:nth-child({i % 2 + 1}) > div > div > button:nth-child(1) {{
-                            {button_style}
-                        }}
-                        </style>
-                        """, unsafe_allow_html=True)
-            elif question["question_type"] == "true_false":
-                options = ["True", "False"]
-                col1, col2 = st.columns(2)
-                with col1:
-                    random_color = get_random_color()
-                    text_color = get_text_color(random_color)
-                    button_style = f"--button-color: {random_color}; --text-color: {text_color};"
-                    if st.button("True", key=f"q{current_idx}_true", use_container_width=True):
-                        st.session_state.selected_answer = "True"
-                        st.session_state.answer_submitted = True
-                        st.rerun()
-                    st.markdown(f"""
-                    <style>
-                    div[data-testid="stColumn"] > div:nth-child(1) > div > button {{
-                        {button_style}
-                    }}
-                    </style>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    random_color = get_random_color()
-                    text_color = get_text_color(random_color)
-                    button_style = f"--button-color: {random_color}; --text-color: {text_color};"
-                    if st.button("False", key=f"q{current_idx}_false", use_container_width=True):
-                        st.session_state.selected_answer = "False"
-                        st.session_state.answer_submitted = True
-                        st.rerun()
-                    st.markdown(f"""
-                    <style>
-                    div[data-testid="stColumn"] > div:nth-child(2) > div > button {{
-                        {button_style}
-                    }}
-                    </style>
-                    """, unsafe_allow_html=True)
-            else:
-                user_answer = st.text_input("Your answer:", key=f"q{current_idx}")
-                if st.button("Submit Answer", key=f"submit_{current_idx}"):
-                    st.session_state.selected_answer = user_answer
-                    st.session_state.answer_submitted = True
-                    st.rerun()
-        
-        if elapsed_time < time_limit:
-            time.sleep(1)
-            st.rerun()
-
-        else: # Answer has been submitted or time is up
+        # Check if timer has run out
+        if time_remaining <= 0:
+            if not st.session_state.answer_submitted:
+                st.session_state.selected_answer = "Time's up!"
+            
             time_taken = int(time.time() - st.session_state.question_start_time)
             is_correct = check_answer(question, st.session_state.selected_answer, question["question_type"])
             accuracy = 1.0
@@ -739,7 +751,6 @@ def play_game(quiz_data):
             else:
                 st.session_state.streak = 0
             
-            # Store answer
             st.session_state.user_answers[current_idx] = {
                 "user_answer": st.session_state.selected_answer,
                 "correct_answer": question["correct_answer"],
@@ -747,15 +758,7 @@ def play_game(quiz_data):
                 "score": score,
                 "time_taken": time_taken
             }
-
-            # Wait for the timer to finish before showing the result
-            time_left = time_limit - time_taken
-            if time_left > 0:
-                with st.empty():
-                    st.markdown(f'<div class="timer-container">{time_left}s</div>', unsafe_allow_html=True)
-                time.sleep(time_left)
-
-            # Show result
+            
             st.markdown("---")
             if is_correct:
                 st.success("✅ Correct!")
@@ -765,14 +768,55 @@ def play_game(quiz_data):
             st.info(f"The correct answer was: **{question['correct_answer']}**")
             st.info(f"You earned: **{int(score)}** points!")
             
-            time.sleep(3) # Display result for 3 seconds
-
-            # Move to next question
+            time.sleep(3)
+            
             st.session_state.current_question += 1
             st.session_state.question_start_time = time.time()
             st.session_state.selected_answer = None
             st.session_state.answer_submitted = False
             st.rerun()
+
+        # Display options based on question type
+        if not st.session_state.answer_submitted:
+            if question["question_type"] == "mcq":
+                options = question.get("options", [])
+                cols = st.columns(2)
+                for i, option in enumerate(options):
+                    with cols[i % 2]:
+                        random_color = OPTION_COLORS[i % 4]
+                        text_color = get_text_color(random_color)
+                        button_style = f"background-color: {random_color}; color: {text_color};"
+                        
+                        if st.button(option, key=f"q{current_idx}_{i}", use_container_width=True):
+                            st.session_state.selected_answer = option
+                            st.session_state.answer_submitted = True
+                            st.rerun()
+
+            elif question["question_type"] == "true_false":
+                options = ["True", "False"]
+                col1, col2 = st.columns(2)
+                for i, option in enumerate(options):
+                    with locals()[f"col{i+1}"]:
+                        random_color = OPTION_COLORS[i % 2]
+                        text_color = get_text_color(random_color)
+                        button_style = f"background-color: {random_color}; color: {text_color};"
+                        
+                        if st.button(option, key=f"q{current_idx}_{i}", use_container_width=True):
+                            st.session_state.selected_answer = option
+                            st.session_state.answer_submitted = True
+                            st.rerun()
+            else:
+                user_answer = st.text_input("Your answer:", key=f"q{current_idx}")
+                if st.button("Submit Answer", key=f"submit_{current_idx}"):
+                    st.session_state.selected_answer = user_answer
+                    st.session_state.answer_submitted = True
+                    st.rerun()
+        
+        # Rerun to update timer if time is still left
+        if time_remaining > 0:
+            time.sleep(1)
+            st.rerun()
+            
     else:
         # Quiz completed
         st.balloons()
@@ -812,17 +856,32 @@ def play_game(quiz_data):
             st.session_state.selected_answer = None
             st.session_state.answer_submitted = False
             st.session_state.streak = 0
-            set_page(st.session_state.prev_page)
+            st.session_state.question_start_time = time.time()  # Reset timer for next game
+            st.session_state.current_page = st.session_state.prev_page
+            st.rerun()
             
-        if st.session_state.prev_page != "trivia" and st.button("← Go Back to Lobby"):
-            st.session_state.current_question = 0
-            st.session_state.user_answers = {}
-            st.session_state.user_score = 0
-            st.session_state.game_started = False
-            st.session_state.selected_answer = None
-            st.session_state.answer_submitted = False
-            st.session_state.streak = 0
-            set_page("exam_prep")
+        if st.session_state.prev_page == "lobby_page":
+            if st.button("← Go Back to Quiz Lobby"):
+                st.session_state.current_question = 0
+                st.session_state.user_answers = {}
+                st.session_state.user_score = 0
+                st.session_state.game_started = False
+                st.session_state.selected_answer = None
+                st.session_state.answer_submitted = False
+                st.session_state.streak = 0
+                st.session_state.question_start_time = time.time()  # Reset timer for next game
+                set_page("lobby_page")
+        else:
+            if st.button("← Go Back to Trivia Page"):
+                st.session_state.current_question = 0
+                st.session_state.user_answers = {}
+                st.session_state.user_score = 0
+                st.session_state.game_started = False
+                st.session_state.selected_answer = None
+                st.session_state.answer_submitted = False
+                st.session_state.streak = 0
+                st.session_state.question_start_time = time.time()  # Reset timer for next game
+                set_page("trivia")
 
 # Trivia page
 def trivia_page():
@@ -869,6 +928,8 @@ def trivia_page():
                 st.session_state.user_answers = {}
                 st.session_state.user_score = 0
                 st.session_state.game_started = True
+                st.session_state.current_lobby = None # Ensure no lobby is tied to this game
+                st.session_state.question_start_time = time.time()  # Reset timer for new game
                 set_page("playing", "trivia")
             else:
                 st.error("Could not generate trivia quiz. Please try again.")
@@ -925,24 +986,6 @@ def leaderboards_page():
 
     else:
         st.info("No leaderboard data yet. Complete some quizzes to appear here! 🎯")
-    
-    lobbies = load_lobbies()
-    if lobbies:
-        st.markdown("---")
-        st.subheader("🎪 Lobby Leaderboards")
-        for lobby_id, lobby in lobbies.items():
-            with st.expander(f"Lobby: {lobby['name']} ({lobby_id})"):
-                if lobby["scores"]:
-                    lobby_scores = []
-                    for user_id, score in lobby["scores"].items():
-                        username = next((name for p_id, name in zip(lobby["players"], lobby["player_names"]) if p_id == user_id), "Unknown")
-                        lobby_scores.append({"Username": username, "Score": score})
-                    
-                    lobby_df = pd.DataFrame(lobby_scores)
-                    lobby_df = lobby_df.sort_values(by="Score", ascending=False).reset_index(drop=True)
-                    st.dataframe(lobby_df, hide_index=True)
-                else:
-                    st.info("No scores recorded for this lobby yet.")
 
 # Mindfulness page
 def mindfulness_page():
@@ -1051,6 +1094,8 @@ def main():
             mindfulness_page()
         elif st.session_state.current_page == "edit_profile":
             edit_profile_page()
+        elif st.session_state.current_page == "lobby_page":
+            lobby_page()
     else:
         login_page()
 
